@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>短视频</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<style>
+:root{--safe-bottom:env(safe-area-inset-bottom,0px)}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+html,body{height:100%;overflow:hidden;background:#000;font-family:-apple-system,"SF Pro Display","Helvetica Neue",sans-serif;color:#fff;overscroll-behavior:none}
+#app{position:fixed;inset:0;overflow:hidden;touch-action:pan-x}
+
+/* slide */
+.s{position:absolute;left:0;width:100%;height:100%;contain:layout style paint;-webkit-backface-visibility:hidden;backface-visibility:hidden;will-change:transform}
+.s video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+
+/* 加载动画 */
+.ld{position:absolute;top:50%;left:50%;width:36px;height:36px;margin:-18px;border:3px solid rgba(255,255,255,.1);border-top-color:#fff;border-radius:50%;animation:sp .6s linear infinite;pointer-events:none;z-index:5}
+.s.ok .ld{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* 暂停图标 */
+.ph{position:absolute;top:50%;left:50%;width:64px;height:64px;margin:-32px;opacity:0;transform:scale(.5);transition:opacity .15s,transform .15s;pointer-events:none;z-index:10}
+.ph.v{opacity:.8;transform:scale(1)}
+.ph svg{width:100%;height:100%;filter:drop-shadow(0 2px 8px rgba(0,0,0,.3))}
+
+/* 右侧工具栏 */
+.toolbar{position:absolute;right:8px;bottom:calc(var(--safe-bottom) + 30px);z-index:15;display:flex;flex-direction:column;align-items:center;gap:18px}
+.tb-item{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
+.tb-item .tb-icon{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:50%;transition:transform .15s}
+.tb-item:active .tb-icon{transform:scale(1.2)}
+.tb-item .tb-icon svg{width:28px;height:28px;fill:#fff;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5))}
+.tb-item .tb-num{font-size:11px;text-shadow:0 1px 3px rgba(0,0,0,.5);opacity:.85;min-height:14px}
+.tb-item.liked .tb-icon svg{fill:#fe2c55}
+.tb-item.disliked .tb-icon svg{fill:#666}
+
+/* 进度条 */
+.progress{position:absolute;bottom:var(--safe-bottom);left:0;width:100%;height:2px;z-index:20;pointer-events:none}
+.progress .bg{position:absolute;width:100%;height:100%;background:rgba(255,255,255,.2);border-radius:1px}
+.progress .fill{height:100%;background:#fff;border-radius:1px;width:0;will-change:width}
+
+/* 飘心 */
+.float-heart{position:fixed;pointer-events:none;z-index:999;font-size:32px;animation:floatUp .8s ease-out forwards}
+@keyframes floatUp{0%{opacity:1;transform:translateY(0) scale(1)}50%{opacity:.8;transform:translateY(-60px) scale(1.3)}100%{opacity:0;transform:translateY(-130px) scale(.8)}}
+
+/* 双击爱心 */
+.dbl-heart{position:fixed;pointer-events:none;z-index:999;animation:dblPop .8s ease-out forwards}
+@keyframes dblPop{0%{opacity:1;transform:scale(0)}30%{transform:scale(1.3)}60%{transform:scale(1)}100%{opacity:0;transform:scale(1.4)}}
+
+/* toast */
+.toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.75);color:#fff;padding:10px 24px;border-radius:20px;font-size:14px;z-index:9999;pointer-events:none;animation:toastIn .3s}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,-50%) scale(.8)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+
+/* 踩抖动 */
+@keyframes shake{0%{transform:scale(1)}15%{transform:scale(1.3) rotate(-12deg)}30%{transform:scale(1.2) rotate(10deg)}45%{transform:scale(1.25) rotate(-8deg)}60%{transform:scale(1.1) rotate(4deg)}100%{transform:scale(1) rotate(0)}}
+</style>
+</head>
+<body>
+<div id="app">
+</div>
+<script>
+(function(){
+'use strict';
+const app=document.getElementById('app');
+let allVideos=[],slides=[],cur=0,total=0;
+let startY=0,startX=0,moveY=0,moving=false,animating=false;
+let lastTap=0,tapTimer=null;
+const POOL=5;
+const voteCache={};
+var globalMuted=true;
+
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.random()*i+1|0;[a[i],a[j]]=[a[j],a[i]]}return a}
+function vidId(url){const m=url.match(/\/([a-f0-9]{32})\.mp4/);return m?m[1]:url}
+
+const SVG={
+heart:'<svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
+dislike:'<svg viewBox="0 0 24 24"><path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/></svg>',
+muted:'<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>',
+unmuted:'<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>',
+share:'<svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>'
+};
+
+/* 加载视频 */
+async function loadVideos(){
+  try{
+    const r=await fetch('/videos.json?v=2');const d=await r.json();
+    let list=[];
+    if(Array.isArray(d))list=d;
+    else Object.values(d).forEach(v=>{if(Array.isArray(v))list.push(...v)});
+    allVideos=shuffle(list);total=allVideos.length;
+    if(total)buildSlides();
+  }catch(e){console.error(e)}
+}
+
+/* 创建 slide */
+function makeSlide(idx){
+  const url=allVideos[idx%total];const id=vidId(url);
+  const d=document.createElement('div');d.className='s';d.dataset.idx=idx;d.dataset.vid=id;
+  d.innerHTML=
+    '<video src="'+url+'" loop playsinline webkit-playsinline preload="metadata" muted></video>'+
+    '<div class="ld"></div>'+
+    '<div class="ph"><svg viewBox="0 0 24 24"><path fill="#fff" d="M8 5v14l11-7z"/></svg></div>'+
+    '<div class="toolbar">'+
+      '<div class="tb-item like-btn" data-action="like"><div class="tb-icon">'+SVG.heart+'</div><span class="tb-num lk-n"></span></div>'+
+      '<div class="tb-item dislike-btn" data-action="dislike"><div class="tb-icon">'+SVG.dislike+'</div><span class="tb-num dk-n"></span></div>'+
+      '<div class="tb-item mute-btn" data-action="mute"><div class="tb-icon">'+(globalMuted?SVG.muted:SVG.unmuted)+'</div><span class="tb-num"></span></div>'+
+      '<div class="tb-item share-btn" data-action="share"><div class="tb-icon">'+SVG.share+'</div><span class="tb-num"></span></div>'+
+    '</div>'+
+    '<div class="progress"><div class="bg"></div><div class="fill"></div></div>';
+
+  const vid=d.querySelector('video');
+  vid.addEventListener('canplay',function(){d.classList.add('ok')},{once:true});
+  vid.addEventListener('timeupdate',function(){if(vid.duration)d.querySelector('.progress .fill').style.width=(vid.currentTime/vid.duration*100)+'%'});
+  fetchVote(id,d);
+  return d;
+}
+
+/* 投票 API */
+async function fetchVote(id,div){
+  if(voteCache[id]){applyVote(div,voteCache[id]);return}
+  try{
+    const r=await fetch('/api/vote?id='+id);
+    if(!r.ok){console.error('vote GET',r.status);return}
+    const d=await r.json();
+    voteCache[id]={likes:d.likes||0,dislikes:d.dislikes||0,my:d.my||null};
+    applyVote(div,voteCache[id]);
+    applyMyVote(div,voteCache[id].my);
+  }catch(e){console.error('vote GET fail',e)}
+}
+function applyVote(div,d){
+  var lk=div.querySelector('.lk-n'),dk=div.querySelector('.dk-n');
+  if(lk)lk.textContent=String(d.likes!=null?d.likes:0);
+  if(dk)dk.textContent=String(d.dislikes!=null?d.dislikes:0);
+}
+function applyMyVote(div,my){
+  var lb=div.querySelector('.like-btn'),db=div.querySelector('.dislike-btn');
+  lb.classList.toggle('liked',my==='like');
+  db.classList.toggle('disliked',my==='dislike');
+}
+async function sendVote(id,type){
+  try{
+    const r=await fetch('/api/vote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,type:type})});
+    if(!r.ok){console.error('vote POST',r.status);return null}
+    const d=await r.json();
+    if(d.ok){voteCache[id]={likes:d.likes,dislikes:d.dislikes,my:d.my||null}}
+    return d;
+  }catch(e){console.error('vote POST fail',e);return null}
+}
+
+/* 容器 */
+var container=document.createElement('div');
+container.style.cssText='position:absolute;inset:0;will-change:transform;-webkit-backface-visibility:hidden';
+app.appendChild(container);
+
+function buildSlides(){
+  for(var i=0;i<Math.min(POOL,total);i++){
+    var s=makeSlide(i);
+    s.style.transform='translate3d(0,'+i*100+'%,0)';
+    container.appendChild(s);slides.push(s);
+  }
+  playAt(0);
+}
+
+function playAt(idx){
+  slides.forEach(function(s){
+    var v=s.querySelector('video');
+    if(parseInt(s.dataset.idx)===idx){v.muted=globalMuted;v.currentTime=0;v.play().catch(function(){});}
+    else v.pause();
+  });
+}
+
+function goTo(newIdx){
+  if(animating||newIdx<0)return;
+  if(newIdx>=total)newIdx=0;
+  animating=true;cur=newIdx;
+  recycleSlides();
+  container.style.transition='transform .3s cubic-bezier(.22,1,.36,1)';
+  container.style.transform='translate3d(0,'+-cur*100+'%,0)';
+  setTimeout(function(){container.style.transition='';animating=false;playAt(cur)},320);
+}
+
+function recycleSlides(){
+  var need=new Set();
+  for(var i=cur-1;i<=cur+2;i++){if(i>=0&&i<total)need.add(i)}
+  slides=slides.filter(function(s){
+    var si=parseInt(s.dataset.idx);
+    if(!need.has(si)){s.querySelector('video').pause();s.remove();return false}
+    need.delete(si);return true;
+  });
+  need.forEach(function(i){
+    var s=makeSlide(i);s.style.transform='translate3d(0,'+i*100+'%,0)';
+    container.appendChild(s);slides.push(s);
+  });
+  slides.sort(function(a,b){return parseInt(a.dataset.idx)-parseInt(b.dataset.idx)});
+}
+
+/* 触摸 */
+app.addEventListener('touchstart',function(e){
+  if(animating)return;startY=e.touches[0].clientY;startX=e.touches[0].clientX;moveY=0;moving=false;
+  container.style.transition='';
+},{passive:true});
+
+app.addEventListener('touchmove',function(e){
+  if(animating)return;
+  var dy=e.touches[0].clientY-startY,dx=e.touches[0].clientX-startX;
+  if(!moving&&Math.abs(dx)>Math.abs(dy))return;
+  moving=true;moveY=dy;
+  container.style.transform='translate3d(0,calc('+-cur*100+'% + '+moveY+'px),0)';
+},{passive:true});
+
+app.addEventListener('touchend',function(e){
+  if(!moving){handleTap(e);return}
+  var threshold=window.innerHeight*.15;
+  if(moveY<-threshold)goTo(cur+1);
+  else if(moveY>threshold)goTo(cur-1);
+  else{container.style.transition='transform .2s ease';container.style.transform='translate3d(0,'+-cur*100+'%,0)';setTimeout(function(){container.style.transition=''},220)}
+  moving=false;moveY=0;
+},{passive:true});
+
+/* 点击/双击 */
+function handleTap(e){
+  var t=e.changedTouches?e.changedTouches[0]:e;
+  var el=document.elementFromPoint(t.clientX,t.clientY);
+  var btn=el?el.closest('.tb-item'):null;
+  if(btn){handleToolbar(btn);return}
+  var now=Date.now();
+  if(now-lastTap<300){clearTimeout(tapTimer);doubleTapLike(t.clientX,t.clientY);lastTap=0}
+  else{lastTap=now;tapTimer=setTimeout(function(){togglePause();lastTap=0},280)}
+}
+
+function togglePause(){
+  var s=slides.find(function(s){return parseInt(s.dataset.idx)===cur});
+  if(!s)return;var v=s.querySelector('video'),ph=s.querySelector('.ph');
+  if(v.paused){v.play();ph.classList.remove('v')}else{v.pause();ph.classList.add('v')}
+}
+
+function doubleTapLike(x,y){
+  var h=document.createElement('div');h.className='dbl-heart';
+  h.innerHTML='<svg width="80" height="80" viewBox="0 0 24 24"><path fill="#fe2c55" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+  h.style.left=(x-40)+'px';h.style.top=(y-40)+'px';
+  document.body.appendChild(h);setTimeout(function(){h.remove()},800);
+  var s=slides.find(function(s){return parseInt(s.dataset.idx)===cur});
+  if(!s)return;var likeBtn=s.querySelector('.like-btn');
+  if(likeBtn&&!likeBtn.classList.contains('liked'))doLike(s);
+}
+
+/* 工具栏 */
+function handleToolbar(btn){
+  var action=btn.dataset.action,s=btn.closest('.s');
+  if(action==='like')doLike(s);
+  else if(action==='dislike')doDislike(s);
+  else if(action==='mute')doMute(s);
+  else if(action==='share')doShare(s);
+}
+
+function doLike(s){
+  var id=s.dataset.vid;
+  sendVote(id,'like').then(function(d){
+    if(d&&d.ok){applyVote(s,voteCache[id]);applyMyVote(s,voteCache[id].my)}
+  });
+  floatHeart(s.querySelector('.like-btn'));
+}
+
+function doDislike(s){
+  var id=s.dataset.vid;
+  sendVote(id,'dislike').then(function(d){
+    if(d&&d.ok){applyVote(s,voteCache[id]);applyMyVote(s,voteCache[id].my)}
+  });
+  shakeBtn(s.querySelector('.dislike-btn'));
+}
+
+function shakeBtn(btn){
+  var icon=btn.querySelector('.tb-icon');
+  icon.style.animation='none';icon.offsetHeight;
+  icon.style.animation='shake .4s ease';
+  setTimeout(function(){icon.style.animation=''},400);
+}
+
+function doMute(s){
+  globalMuted=!globalMuted;
+  document.querySelectorAll('.mute-btn .tb-icon').forEach(function(el){el.innerHTML=globalMuted?SVG.muted:SVG.unmuted});
+  s.querySelector('video').muted=globalMuted;
+}
+
+function doShare(s){
+  var url=s.querySelector('video').src;
+  if(navigator.share)navigator.share({title:'好看的视频',url:url}).catch(function(){});
+  else if(navigator.clipboard)navigator.clipboard.writeText(url).then(function(){showToast('链接已复制')}).catch(function(){});
+  else showToast('长按视频可保存');
+}
+
+function showToast(msg){
+  var t=document.createElement('div');t.className='toast';t.textContent=msg;
+  document.body.appendChild(t);setTimeout(function(){t.remove()},1500);
+}
+
+function floatHeart(btn){
+  var rect=btn.getBoundingClientRect();
+  var h=document.createElement('div');h.className='float-heart';h.textContent='\u2764\uFE0F';
+  h.style.left=(rect.left+rect.width/2-16)+'px';h.style.top=rect.top+'px';
+  document.body.appendChild(h);setTimeout(function(){h.remove()},800);
+}
+
+/* PC: 滚轮+键盘 */
+var wheelLock=false;
+document.addEventListener('wheel',function(e){
+  if(wheelLock||animating)return;wheelLock=true;
+  if(e.deltaY>0)goTo(cur+1);else if(e.deltaY<0)goTo(cur-1);
+  setTimeout(function(){wheelLock=false},500);
+},{passive:true});
+
+document.addEventListener('keydown',function(e){
+  if(e.key==='ArrowDown'||e.key==='j')goTo(cur+1);
+  else if(e.key==='ArrowUp'||e.key==='k')goTo(cur-1);
+  else if(e.key===' '){e.preventDefault();togglePause()}
+  else if(e.key==='m'){var s=slides.find(function(s){return parseInt(s.dataset.idx)===cur});if(s)doMute(s)}
+});
+
+/* PC 点击 */
+app.addEventListener('click',function(e){
+  var btn=e.target.closest('.tb-item');
+  if(btn){handleToolbar(btn);return}
+  if('ontouchstart' in window)return;
+  togglePause();
+});
+app.addEventListener('dblclick',function(e){
+  if('ontouchstart' in window)return;
+  if(e.target.closest('.tb-item'))return;
+  doubleTapLike(e.clientX,e.clientY);
+});
+
+/* PWA */
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(function(){});
+
+loadVideos();
+})();
+</script>
+</body>
+</html>
